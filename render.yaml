@@ -48,6 +48,8 @@ services:
         value: "30"
       - key: GEV_RATELIMIT_GOOGLE_PER_MIN
         value: "120"
+      - key: GEV_TRUST_PROXY
+        value: "1"
       - key: GEV_ACCESS_PASSWORD
         sync: false
       - key: GOOGLE_MAPS_API_KEY

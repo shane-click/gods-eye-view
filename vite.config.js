@@ -8057,7 +8057,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [
       // First so the password check runs before every proxy and asset route.
-      accessGatePlugin(env.GEV_ACCESS_PASSWORD),
+      accessGatePlugin(env.GEV_ACCESS_PASSWORD, { trustProxy: env.GEV_TRUST_PROXY === '1' }),
       cesium(),
       openSkyProxy(),
       celestrakProxy(),

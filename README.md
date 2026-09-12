@@ -173,7 +173,8 @@ runs the same dev server with the shared-password gate on. In the Render
 dashboard choose New, then Blueprint, point it at your fork, and paste each
 secret it asks for: `GEV_ACCESS_PASSWORD` plus whichever provider keys you
 use. Render assigns an `onrender.com` HTTPS hostname; open it, enter the
-password once at the browser prompt, and the app behaves as it does locally.
+password on the sign-in page, and the app behaves as it does locally.
+Failed sign-ins are rate limited.
 Restrict the Google Maps key and Cesium token to that hostname at the
 provider, since both ship to the browser. Vercel and other serverless hosts
 do not fit: the app is one long-running process with a server-side AIS
