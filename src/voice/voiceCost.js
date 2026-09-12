@@ -25,8 +25,8 @@
  * ⚠️ VERIFY AT RELEASE — MODEL IDS AND PRICES ARE EXTERNAL FACTS THAT DRIFT. ⚠️
  *
  * Both model ids and every rate below were read from OpenAI's own model +
- * pricing pages on 2026-08-18:
- *   - https://developers.openai.com/api/docs/models/gpt-realtime-2
+ * pricing pages on 2026-09-12:
+ *   - https://developers.openai.com/api/docs/models/gpt-realtime-2.1
  *   - https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini
  *   - https://developers.openai.com/api/docs/pricing
  *
@@ -42,16 +42,16 @@
  *
  * Rates are USD per 1,000,000 tokens.
  */
-export const VOICE_MODEL_RATES_VERIFIED_ON = '2026-08-18';
+export const VOICE_MODEL_RATES_VERIFIED_ON = '2026-09-12';
 
 /** @typedef {'standard'|'mini'} VoiceModelTier */
 
 export const VOICE_MODELS = Object.freeze({
   standard: Object.freeze({
     tier: 'standard',
-    id: 'gpt-realtime-2',
+    id: 'gpt-realtime-2.1',
     label: 'STANDARD',
-    /** USD per 1M tokens — gpt-realtime-2. */
+    /** USD per 1M tokens, gpt-realtime-2.1 (same rates as gpt-realtime-2). */
     rates: Object.freeze({
       textInput: 4,
       textCachedInput: 0.4,

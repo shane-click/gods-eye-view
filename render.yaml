@@ -29,6 +29,21 @@ services:
         value: 0.0.0.0
       - key: PUPPETEER_SKIP_DOWNLOAD
         value: "true"
+      # Free tier is 512 MB. Cap the V8 heap so garbage is collected before
+      # the container limit kills the process, keep the AIS cache to the
+      # Australia and New Zealand region, and trim the US and UK camera packs.
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=360
+      - key: AISSTREAM_BOUNDING_BOXES
+        value: "[[[-48,105],[-8,180]]]"
+      - key: AISSTREAM_SILENCE_TIMEOUT_MS
+        value: "120000"
+      - key: CCTV_AUSTIN_MAX_SOURCES
+        value: "100"
+      - key: CCTV_CALTRANS_MAX_SOURCES
+        value: "100"
+      - key: CCTV_TFL_MAX_SOURCES
+        value: "100"
       - key: GEV_RATELIMIT_OPENAI_PER_MIN
         value: "30"
       - key: GEV_RATELIMIT_GOOGLE_PER_MIN
