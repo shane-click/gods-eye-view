@@ -15,6 +15,7 @@ import {
   parseStoredLayerState,
   serializeStoredLayerState,
   validateLayerStateRegistry,
+  FRESH_BOOT_ENABLED_LAYER_IDS,
 } from './layerState.js';
 import radioLayer from './radio.js';
 import { stampInitialShareGesture } from '../navigationPolicy.js';
@@ -337,12 +338,10 @@ test('a fresh boot starts 3D aircraft ON in proximity — codec, both layers, an
   // below the fleet altitude ceiling and only for the nearest MODEL_MAX in view,
   // so "on" costs nothing at globe scale and `all` stays a deliberate opt-in.
   //
-  // The reason this is one test rather than four is the early return in `start()`
-  // below: with no share payload and no stored state, restoration NEVER RUNS, so
-  // nothing pushes the codec default into the layers. Four independent
-  // initializers decide what a first-run operator actually sees, and changing any
-  // one alone ships a lit button over an unarmed layer, or an armed layer under a
-  // dark button. Pinning them together is what makes "state and UI agree" a fact.
+  // A fresh boot now restores the fresh-boot layer set at the passive local
+  // origin, which also pushes the codec default into the aircraft layers. The
+  // module initializers and the markup below still have to agree with it,
+  // because they decide what paints before that restore settles.
   const defaults = createDefaultLayerState().options.flights;
   assert.equal(defaults.models3d, true, 'the durable default is 3D ON');
   assert.equal(defaults.models3dMode, 'proximity', 'and proximity, never all');
@@ -357,8 +356,11 @@ test('a fresh boot starts 3D aircraft ON in proximity — codec, both layers, an
   assert.equal(coordinator.source, 'defaults');
   assert.equal(coordinator.getDurableState().options.flights.models3d, true);
   assert.equal(coordinator.getDurableState().options.flights.models3dMode, 'proximity');
-  assert.deepEqual(paramsCalls, [],
-    'a fresh boot restores nothing — which is exactly why the module initializers below must match');
+  assert.ok(paramsCalls.length > 0, 'a fresh boot restores the fresh-boot set and pushes the codec default');
+  for (const call of paramsCalls) {
+    assert.equal(call.models3d, true);
+    assert.equal(call.models3dMode, 'proximity');
+  }
   coordinator.destroy();
 
   // The other three surfaces, read from source, because each is the literal a
@@ -385,6 +387,24 @@ test('a fresh boot starts 3D aircraft ON in proximity — codec, both layers, an
     'index.html: and the Proximity/All row paints open with it');
   assert.match(html, /id="models3d-mode-proximity"[^>]*aria-checked="true"/,
     'index.html: Proximity is the selected mode in the markup');
+});
+
+test('a fresh boot enables every data layer except the passive awareness shell without writing storage', async () => {
+  assert.deepEqual(
+    [...FRESH_BOOT_ENABLED_LAYER_IDS].sort(),
+    REGISTERED_LAYER_IDS.filter((id) => id !== 'military-awareness').sort(),
+  );
+  const storage = memoryStorage();
+  const manager = productionManager();
+  const coordinator = new LayerStateCoordinator(manager, shareSink(), { storage });
+  await coordinator.start();
+  assert.equal(coordinator.source, 'defaults');
+  assert.deepEqual([...coordinator.getDurableState().enabledLayerIds].sort(), [...FRESH_BOOT_ENABLED_LAYER_IDS].sort());
+  assert.deepEqual([...manager.getEnabledLayerIds()].sort(), [...FRESH_BOOT_ENABLED_LAYER_IDS].sort(),
+    'every fresh-boot layer is enabled on the manager once restore settles');
+  assert.equal(storage.getItem(LAYER_STATE_STORAGE_KEY), null,
+    'the passive restore writes nothing; only an explicit toggle persists');
+  coordinator.destroy();
 });
 
 test('a v2 link written before the flip still means what its author saw: 3D OFF', () => {

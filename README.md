@@ -118,8 +118,10 @@ npm run doctor
 npm run dev
 ```
 
-Open **`http://localhost:4173`**. Choose **Live Contacts**, **Space Missions**,
-**Environmental**, or **Explore Manually** from the first-run panel.
+Open **`http://localhost:4173`**. Every data layer starts on, so the globe is
+live the moment it loads. Add `?welcome=1` to the URL for the guided
+first-run panel (**Live Contacts**, **Space Missions**, **Environmental**, or
+**Explore Manually**).
 
 <details>
 <summary>Startup performance</summary>
@@ -189,7 +191,7 @@ and it carries the LAN-sharing rules alongside [Keys & Costs](#-api-keys).
 
 ## 🕐 The First Five Minutes
 
-Choose a first-run mission, or try these in order. The GIFs show Google Photorealistic 3D; your starting basemap depends on the keys you've added.
+Try these in order, or open `?welcome=1` for the guided missions. The GIFs show Google Photorealistic 3D; your starting basemap depends on the keys you've added.
 
 1. **Light up the sky.** Take the **Live Contacts** mission (or turn on **Flights** yourself) — thousands of live aircraft, gliding on real telemetry, detection mesh already reading the scene. Click one: the camera locks on, a trail draws behind it, and its live telemetry card comes up.
 2. **Take the controls.** Hit **COCKPIT** on your tracked plane and ride it down, switching sensors mid-flight: NVG into Ironbow FLIR.

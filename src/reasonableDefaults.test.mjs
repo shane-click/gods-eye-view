@@ -21,7 +21,7 @@
 // literal:
 //
 //   • the first-run VALUE, at every surface that independently decides it — a
-//     fresh boot runs no restore, so these literals ARE the startup state and
+//     fresh-boot restore settles after first paint, so these literals ARE the startup state and
 //     changing one alone ships a UI that disagrees with its own engine;
 //   • explicit state still WINS over it — a link, or the operator's own hand,
 //     because "default" means "what you get when you said nothing";

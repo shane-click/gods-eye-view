@@ -34,12 +34,11 @@ const fresh = () => ({
 
 // ── Show policy ──────────────────────────────────────────────────────────────
 
-test('a fresh session receives the launcher, and keeps receiving it', () => {
-  assert.equal(shouldShowFirstRun(fresh()), true);
-  // Not one-shot: a previous session's completion does not suppress a new one.
-  const returning = fresh();
-  returning.sessionStorageRef = memoryStorage(FIRST_RUN_SESSION_KEY);
-  assert.equal(shouldShowFirstRun(returning), true);
+test('a fresh session lands on the live globe; the launcher is opt-in via ?welcome=1', () => {
+  // Every data layer is on by default now, and two missions clear layers to
+  // isolate a context, so the launcher no longer greets a fresh session.
+  assert.equal(shouldShowFirstRun(fresh()), false);
+  assert.equal(shouldShowFirstRun({ ...fresh(), location: { search: '?welcome=1' } }), true);
 });
 
 test('dismissal is session-scoped; only the checkbox suppresses durably', () => {
@@ -50,12 +49,12 @@ test('dismissal is session-scoped; only the checkbox suppresses durably', () => 
   assert.equal(session.read(), 'dismissed');
   // Gone for THIS session...
   assert.equal(shouldShowFirstRun({ storage, sessionStorageRef: session, location: { search: '' } }), false);
-  // ...and back in the next one, because sessionStorage did not survive it.
+  // ...and still absent in the next one, since the launcher is opt-in.
   assert.equal(shouldShowFirstRun({
     storage,
     sessionStorageRef: memoryStorage(FIRST_RUN_SESSION_KEY),
     location: { search: '' },
-  }), true);
+  }), false);
   // Session dismissal must never have written the durable key.
   assert.equal(storage.read(), null);
 });
@@ -70,22 +69,24 @@ test('the checkbox writes and clears durable suppression, and a storage reset un
     location: { search: '' },
   }), false);
 
-  // Unticking before dismissing takes the suppression back.
+  // Unticking before dismissing takes the suppression back; the durable
+  // suppression still wins over an explicit ?welcome=1 replay only via the
+  // hatch's own precedence, so check it against the replay param.
   setFirstRunSuppressed(false, storage);
   assert.equal(storage.read(), null);
   assert.equal(shouldShowFirstRun({
     storage,
     sessionStorageRef: memoryStorage(FIRST_RUN_SESSION_KEY),
-    location: { search: '' },
+    location: { search: '?welcome=1' },
   }), true);
 
-  // A cleared/hard-reset profile shows it again — an accepted, documented cost.
+  // A cleared/hard-reset profile still lands on the live globe.
   setFirstRunSuppressed(true, storage);
   assert.equal(shouldShowFirstRun({
     storage: memoryStorage(FIRST_RUN_STORAGE_KEY),
     sessionStorageRef: memoryStorage(FIRST_RUN_SESSION_KEY),
     location: { search: '' },
-  }), true);
+  }), false);
 });
 
 test('welcome params work in both directions and outrank both suppressions', () => {
@@ -113,7 +114,8 @@ test('privacy-restricted storage fails open and every write stays best-effort', 
     setItem: () => { throw new Error('blocked'); },
     removeItem: () => { throw new Error('blocked'); },
   };
-  assert.equal(shouldShowFirstRun({ storage: blocked, sessionStorageRef: blocked }), true);
+  assert.equal(shouldShowFirstRun({ storage: blocked, sessionStorageRef: blocked }), false);
+  assert.equal(shouldShowFirstRun({ storage: blocked, sessionStorageRef: blocked, location: { search: '?welcome=1' } }), true);
   assert.doesNotThrow(() => setFirstRunSuppressed(true, blocked));
   assert.doesNotThrow(() => rememberFirstRunSessionDismissed(blocked));
 });
@@ -139,9 +141,9 @@ test('a THROWING storage getter still fails open — Safari private mode', () =>
       'a hostile storage getter must not escape shouldShowFirstRun',
     );
     assert.equal(
-      shouldShowFirstRun({ location: { search: '' } }),
+      shouldShowFirstRun({ location: { search: '?welcome=1' } }),
       true,
-      'a visitor whose storage throws must still SEE the launcher',
+      'a visitor whose storage throws must still be able to open the launcher',
     );
     assert.doesNotThrow(() => setFirstRunSuppressed(true));
     assert.doesNotThrow(() => setFirstRunSuppressed(false));
