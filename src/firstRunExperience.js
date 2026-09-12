@@ -211,7 +211,10 @@ export function shouldShowFirstRun({
   if (params.get('welcome') === '1') return true;
   if (readStored('local', storage, FIRST_RUN_STORAGE_KEY) === 'suppressed') return false;
   if (readStored('session', sessionStorageRef, FIRST_RUN_SESSION_KEY) === 'dismissed') return false;
-  return true;
+  // A fresh boot now starts with every data layer on, and two of the missions
+  // clear layers to isolate their context, so the launcher is opt-in via
+  // ?welcome=1 rather than the default landing.
+  return false;
 }
 
 /**

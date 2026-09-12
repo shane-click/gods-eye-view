@@ -2550,7 +2550,7 @@ demand with square-root demand scaling and semantic layer weights
 **A default has THREE surfaces, and a PARSE fallback that is not one of them.**
 The value literals (engine constant, markup value, markup readout, `ui.js`
 `GLOBAL_POST_DEFAULTS`, the share generator's starting state) must all move
-together, because a fresh boot runs no restore and those literals ARE the startup
+together, because those literals paint before the fresh-boot restore settles and ARE the startup
 state. The `scf` / `ko` PARSE fallbacks deliberately do NOT move: they answer
 what an OLD LINK that omits the field meant, and such a link was authored under
 that era's default (`scf` → 35, `ko` → 5). Every link since carries both fields

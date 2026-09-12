@@ -295,6 +295,16 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
 
 export const REGISTERED_LAYER_IDS = Object.freeze(LAYER_STATE_REGISTRY.map((entry) => entry.id));
 
+/**
+ * Layers a fresh boot switches on: every registered layer except the passive
+ * military-awareness shell, which the toggle panel hides and which would enter
+ * Contacts mode if enabled explicitly. Share links and stored preferences
+ * still win over this set.
+ */
+export const FRESH_BOOT_ENABLED_LAYER_IDS = Object.freeze(
+  REGISTERED_LAYER_IDS.filter((id) => id !== 'military-awareness'),
+);
+
 const REGISTRY_BY_ID = new Map(LAYER_STATE_REGISTRY.map((entry) => [entry.id, entry]));
 const REGISTRY_BY_TOKEN = new Map(LAYER_STATE_REGISTRY.map((entry) => [entry.token, entry]));
 const OPTION_OWNER_IDS = Object.freeze([...new Set(
@@ -364,6 +374,17 @@ export function createDefaultLayerState() {
       ownerId,
       defaultsForOwner(ownerId),
     ])),
+  };
+}
+
+/**
+ * Durable state for a first load with no share link and no stored
+ * preferences: the default options plus the fresh-boot layer set.
+ */
+export function createFreshBootLayerState() {
+  return {
+    ...createDefaultLayerState(),
+    enabledLayerIds: [...FRESH_BOOT_ENABLED_LAYER_IDS],
   };
 }
 
@@ -590,11 +611,17 @@ export class LayerStateCoordinator {
       // unrelated recipient's saved local layer preferences.
       this._source = 'legacy-share';
     }
-    this._durableState = selected || createDefaultLayerState();
+    // A fresh boot (no share payload, nothing stored) starts with every data
+    // layer on. A legacy share with no layer payload keeps its historical
+    // "nothing on" behaviour.
+    const freshBoot = !selected && this._source === 'defaults';
+    this._durableState = selected || (freshBoot ? createFreshBootLayerState() : createDefaultLayerState());
     this.shareLinkManager?.setLayerStateProvider?.(() => this.getDurableState());
     this.shareLinkManager?.onLayerStateChange?.();
     this._notifyDurableState();
-    if (!selected) return this.restorePromise;
+    if (!selected && !freshBoot) return this.restorePromise;
+    // The fresh-boot set restores at the passive local origin, so nothing is
+    // written to storage until the user toggles a layer themselves.
     this.restorePromise = this._restoreSelectedState(
       this._source === 'share' ? LAYER_RESTORE_ORIGINS.share : LAYER_RESTORE_ORIGINS.local,
     );
