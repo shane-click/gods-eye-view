@@ -1,0 +1,53 @@
+# Render Blueprint for a single-instance, password-gated deployment.
+#
+# The app is one long-running Node process: the Vite dev server hosts the
+# page and every /api/* proxy (CCTV, TomTom, AISStream websocket, OpenAI
+# token broker, and so on), keeps in-memory caches, and writes a small disk
+# cache under .gev-cache. Run exactly one instance.
+#
+# Apply with: Render dashboard -> New -> Blueprint -> this repo. Every
+# `sync: false` variable is a secret you paste in the dashboard; the rest are
+# fixed here. GEV_ACCESS_PASSWORD turns on the shared-password gate
+# (scripts/access-gate.mjs). Leave HOST at 0.0.0.0 so the server binds to Render's
+# network interface; Render supplies PORT itself.
+services:
+  - type: web
+    name: gods-eye-view
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci --include=dev
+    startCommand: npm run dev
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: development
+      - key: HOST
+        value: 0.0.0.0
+      - key: PUPPETEER_SKIP_DOWNLOAD
+        value: "true"
+      - key: GEV_RATELIMIT_OPENAI_PER_MIN
+        value: "30"
+      - key: GEV_RATELIMIT_GOOGLE_PER_MIN
+        value: "120"
+      - key: GEV_ACCESS_PASSWORD
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: CESIUM_ION_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: AISSTREAM_API_KEY
+        sync: false
+      - key: FIRMS_MAP_KEY
+        sync: false
+      - key: TOMTOM_API_KEY
+        sync: false
+      - key: OPENSKY_CLIENT_ID
+        sync: false
+      - key: OPENSKY_CLIENT_SECRET
+        sync: false

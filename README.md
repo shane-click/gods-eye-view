@@ -166,6 +166,19 @@ Configure issue is resolved. On macOS, the Keychain via
 
 </details>
 
+### Hosting it on Render
+
+`render.yaml` is a Blueprint for a single-instance Render web service that
+runs the same dev server with the shared-password gate on. In the Render
+dashboard choose New, then Blueprint, point it at your fork, and paste each
+secret it asks for: `GEV_ACCESS_PASSWORD` plus whichever provider keys you
+use. Render assigns an `onrender.com` HTTPS hostname; open it, enter the
+password once at the browser prompt, and the app behaves as it does locally.
+Restrict the Google Maps key and Cesium token to that hostname at the
+provider, since both ship to the browser. Vercel and other serverless hosts
+do not fit: the app is one long-running process with a server-side AIS
+websocket and in-memory caches.
+
 The server binds to **localhost** on both paths, and Provider Settings answers
 requests only from your machine. Browser-side keys (Google Maps, Cesium ion)
 must be restricted at their providers — [SECURITY.md](SECURITY.md) shows how,
@@ -186,7 +199,7 @@ Choose a first-run mission, or try these in order. The GIFs show Google Photorea
 
 ![Moving from a full airport overhead down to close taxiway inspection with 3D flight models](docs/media/start-here/airport-ground-traffic-google-3d.gif)
 
-4. **Look through a public camera.** Turn on **CCTV** over Austin, London, or California. The feeds aren't webcam embeds — they project *into* the 3D city. Cycle coverage to **VIEWSHED** and every camera draws its estimated coverage volume — where it reaches, and where it goes blind.
+4. **Look through a public camera.** Turn on **CCTV** over Austin, London, California, Sydney, Brisbane, or Melbourne. The feeds aren't webcam embeds: they project *into* the 3D city. Cycle coverage to **VIEWSHED** and every camera draws its estimated coverage volume, where it reaches and where it goes blind.
 
 ![Diving into an Austin intersection with a live public camera projected into the 3D scene](docs/media/03-austin-cctv.gif)
 
@@ -273,7 +286,7 @@ Thirteen layers and map sources. **Eleven have a keyless path.** Some offer addi
 | 🛰️ **Satellites** | 838-object catalog, color-coded by class with a live legend — the **DENSE** chip drops in the whole Starlink shell | CelesTrak | 🟢 |
 | 🌍 **Earthquakes** | Global seismic activity, last 24h | USGS | 🟢 |
 | 🚗 **Traffic** | Simulated vehicles on OSM roads. With TomTom, live flow speeds drive the simulation and congestion colors below ~8 km; individual vehicle positions are not live observations | TomTom + OSM | 🟢 simulation · 🟡 live flow speeds |
-| 📹 **CCTV Mesh** | ~800 public cameras projected *into* the 3D space — Austin · California (Caltrans) · London (TfL). Positions are published; poses are estimated priors **you calibrate by dragging a gizmo on the camera itself** | City APIs | 🟢 |
+| 📹 **CCTV Mesh** | ~1,150 public cameras projected *into* the 3D space: Austin · California (Caltrans) · London (TfL) · New South Wales (Transport for NSW) · Queensland (QLDTraffic) · Melbourne CityLink (Linkt). Positions are published; poses are estimated priors **you calibrate by dragging a gizmo on the camera itself** | City and state APIs | 🟢 |
 | 📻 **Radio** | Geolocated world radio with an **analog tuner** — drag the needle across up to 750 stations and the globe flies to each broadcaster | Radio Browser / broadcasters | 🟢 |
 | 🚲 **Bikeshare** | Live station availability | GBFS | 🟢 |
 | 🔥 **Active Fires** | Live NASA FIRMS detections, trailing 24h | NASA FIRMS | 🟡 |

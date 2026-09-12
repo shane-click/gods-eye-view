@@ -56,6 +56,7 @@ import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
 import { keylessHudSummaryResponse } from './src/hudSummaryResponse.js';
+import { accessGatePlugin } from './scripts/access-gate.mjs';
 import { parseEnv as parseDotenvText } from 'node:util';
 import { readEnvironmentSource as readPinokioEnvironmentSource } from './scripts/pinokio-environment.mjs';
 import {
@@ -3525,8 +3526,10 @@ const DEFAULT_CCTV_SOURCE_FILE = 'config/cctv_sources.austin.json';
 const DEFAULT_AUSTIN_ROWS_URL = 'https://data.austintexas.gov/api/views/b4k4-adkb/rows.json?accessType=DOWNLOAD';
 /** Default cap on Austin cameras after distance-based prioritization. */
 const DEFAULT_AUSTIN_MAX_SOURCES = 250;
-/** Global cap on total CCTV sources served by the proxy. */
-const DEFAULT_CCTV_MAX_SOURCES = 900;
+/** Global cap on total CCTV sources served by the proxy. Sized so the five
+ * live packs (Austin, Caltrans, TfL, NSW, QLD) fit at their default per-pack
+ * caps without the merge slice dropping whichever pack loads last. */
+const DEFAULT_CCTV_MAX_SOURCES = 1200;
 /** Reference point for Austin camera prioritization (Congress & 6th). */
 const AUSTIN_DOWNTOWN = { lat: 30.2672, lon: -97.7431 };
 /** Caltrans CCTV: one JSON feed per district, identical schema statewide. */
@@ -3547,6 +3550,38 @@ const TFL_JAMCAM_URL = 'https://api.tfl.gov.uk/Place/Type/JamCam';
 const TFL_IMAGE_ORIGIN = 'https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/';
 const DEFAULT_TFL_MAX_SOURCES = 250;
 const LONDON_CENTER = { lat: 51.5074, lon: -0.1278 };
+/** Transport for NSW Live Traffic cameras: keyless GeoJSON list; JPEG frames refresh about every 60 s. */
+const NSW_CAMERA_LIST_URL = 'https://data.livetraffic.com/cameras/traffic-cam.json';
+const NSW_IMAGE_ORIGIN = 'https://webcams.transport.nsw.gov.au/';
+/** The NSW frame host answers a placeholder HTML page to non-browser user
+ * agents (Accept and Referer make no difference), so NSW frame fetches carry
+ * a browser User-Agent. The catalog itself publishes these image URLs for
+ * developer use under CC BY 3.0 AU. */
+const NSW_IMAGE_REQUEST_HEADERS = Object.freeze({
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36',
+});
+const DEFAULT_NSW_MAX_SOURCES = 250;
+const SYDNEY_CENTER = { lat: -33.8688, lon: 151.2093 };
+/** QLDTraffic webcams: GeoJSON list with a compass direction per camera.
+ * The request needs an apikey; the public developer key below is published in
+ * the QLDTraffic API specification v1.10 for consumers who do not register.
+ * Set QLDTRAFFIC_API_KEY to use a registered key instead. */
+const QLD_WEBCAMS_URL = 'https://api.qldtraffic.qld.gov.au/v1/webcams';
+const QLD_PUBLIC_API_KEY = '3e83add325cbb69ac4d8e5bf433d770b';
+const QLD_IMAGE_ORIGIN = 'https://cameras.qldtraffic.qld.gov.au/';
+const DEFAULT_QLD_MAX_SOURCES = 250;
+/** Prioritization anchors: Brisbane CBD and Gold Coast (Surfers Paradise). */
+const QLD_ANCHORS = [
+  { lat: -27.4698, lon: 153.0251 },
+  { lat: -28.0023, lon: 153.4145 },
+];
+/** Linkt (Transurban CityLink) Melbourne webcams. linkt.com.au serves its
+ * camera catalog behind an Imperva browser challenge, so the catalog is
+ * snapshotted into this bundled pack (16 cameras, taken 2026-09-12). The
+ * JPEG frames come from a separate Transurban host that serves any client and
+ * refreshes about every 5 s. */
+const LINKT_MELBOURNE_PACK_FILE = 'config/cctv_sources.linkt-melbourne.json';
+const LINKT_IMAGE_ORIGIN = 'https://cmlwebcam.transurban.com/';
 /** Camera CATALOGS change rarely; 15 min keeps multi-megabyte upstream list refetches (Austin rows.json + 4 Caltrans districts + TfL) infrequent. Frames are fetched per-request and are unaffected. */
 const CCTV_SOURCE_CACHE_MS = 15 * 60 * 1000;
 /** Per-provider catalog-fetch timeout. Bounds the worst-case refresh so one
@@ -4172,6 +4207,262 @@ async function loadTflSourcesFromOpenData() {
   }
 }
 
+/** 16-point compass rose, clockwise from north, in degrees. */
+const COMPASS_HEADING_DEG = Object.freeze({
+  N: 0, NNE: 22.5, NE: 45, ENE: 67.5,
+  E: 90, ESE: 112.5, SE: 135, SSE: 157.5,
+  S: 180, SSW: 202.5, SW: 225, WSW: 247.5,
+  W: 270, WNW: 292.5, NW: 315, NNW: 337.5,
+});
+
+/**
+ * Convert a compass label to a heading in degrees.
+ *
+ * Accepts abbreviations and full words in any case, with or without
+ * separators: "N-W", "NW", "NorthWest" and "north west" all give 315.
+ *
+ * @param {unknown} direction - Compass label from a camera catalog.
+ * @returns {number} Heading 0..360, or NaN when the label is not a compass point.
+ */
+export function compassToHeadingDeg(direction) {
+  const letters = String(direction ?? '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (!letters) return NaN;
+  const abbreviated = letters
+    .replace(/NORTH/g, 'N')
+    .replace(/SOUTH/g, 'S')
+    .replace(/EAST/g, 'E')
+    .replace(/WEST/g, 'W');
+  const heading = COMPASS_HEADING_DEG[abbreviated];
+  return Number.isFinite(heading) ? heading : NaN;
+}
+
+/**
+ * Pose priors for a catalog camera. A published compass direction earns the
+ * tighter "high confidence" personality; a missing one falls back to the
+ * id-hash heading with the wider, shorter low-confidence cone.
+ *
+ * @param {string} cameraId - Provider-stable camera id (hash input for the fallback heading).
+ * @param {unknown} direction - Compass label from the catalog, if any.
+ * @returns {{headingDeg:number, headingConfidence:string, pitchDeg:number, fovDeg:number, rangeM:number, mountHeightM:number}}
+ */
+function poseFromCompassDirection(cameraId, direction) {
+  const heading = compassToHeadingDeg(direction);
+  const hasHeading = Number.isFinite(heading);
+  return {
+    headingDeg: hasHeading ? heading : fallbackHeadingFromId(cameraId),
+    headingConfidence: hasHeading ? 'high' : 'low',
+    pitchDeg: hasHeading ? -24 : -18,
+    fovDeg: hasHeading ? 56 : 44,
+    rangeM: hasHeading ? 210 : 145,
+    mountHeightM: hasHeading ? 10 : 8,
+  };
+}
+
+/**
+ * Load Transport for NSW Live Traffic cameras.
+ *
+ * Keyless GeoJSON list (CC BY 3.0 AU). Each feature carries a title, a view
+ * description, a compass direction and a JPEG href on the NSW webcam host.
+ * Frames are refreshed upstream about once a minute. The image host requires
+ * browser-like headers, which the proxy attaches via `upstreamHeaders`.
+ * Registered as "Transport for NSW" in src/data/dataCredits.js.
+ *
+ * @returns {Promise<Array<object>>} Normalized camera source objects.
+ */
+async function loadNswSourcesFromOpenData() {
+  try {
+    const resp = await fetch(NSW_CAMERA_LIST_URL, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
+    });
+    if (!resp.ok) {
+      console.warn('[CCTV] Transport for NSW camera list download failed:', resp.status);
+      return [];
+    }
+    const collection = await resp.json();
+    const features = Array.isArray(collection?.features) ? collection.features : [];
+
+    const cameras = [];
+    for (const feature of features) {
+      const props = feature?.properties || {};
+      const coordinates = feature?.geometry?.coordinates;
+      const lon = toFiniteNumber(coordinates?.[0]);
+      const lat = toFiniteNumber(coordinates?.[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      const imageUrl = String(props.href || '');
+      if (!imageUrl.startsWith(NSW_IMAGE_ORIGIN)) continue; // official-host pin
+
+      const rawId = String(feature?.id || '').trim();
+      if (!rawId) continue;
+      const cameraId = `nsw-${rawId}`;
+      const isSydney = String(props.region || '').toUpperCase().startsWith('SYD');
+
+      cameras.push({
+        id: cameraId,
+        name: String(props.title || `NSW camera ${rawId}`),
+        city: isSydney ? 'Sydney' : 'New South Wales',
+        cityId: isSydney ? 'sydney' : 'nsw-regional',
+        provider: 'Transport for NSW',
+        lat,
+        lon,
+        ...poseFromCompassDirection(cameraId, props.direction),
+        groundElevationM: 20, // Sydney basin prior; one-shot snap corrects.
+        feedType: 'image',
+        url: imageUrl,
+        snapshotUrl: imageUrl,
+        upstreamHeaders: NSW_IMAGE_REQUEST_HEADERS,
+        sourceKind: 'nsw-open-data',
+        license: 'Transport for NSW Live Traffic cameras (CC BY 3.0 AU)',
+      });
+    }
+
+    const maxRaw = Number(process.env.CCTV_NSW_MAX_SOURCES || DEFAULT_NSW_MAX_SOURCES);
+    const maxCount = Number.isFinite(maxRaw) ? Math.max(8, Math.min(600, Math.floor(maxRaw))) : DEFAULT_NSW_MAX_SOURCES;
+    const prioritized = prioritizeSources(cameras, maxCount, [SYDNEY_CENTER]);
+    console.log(`[CCTV] Loaded Transport for NSW sources: ${cameras.length} available (using nearest ${prioritized.length})`);
+    return prioritized;
+  } catch (error) {
+    console.warn('[CCTV] Transport for NSW camera list download error:', error?.message || error);
+    return [];
+  }
+}
+
+/**
+ * Load QLDTraffic webcams (Queensland Department of Transport and Main Roads).
+ *
+ * GeoJSON list (CC BY 4.0 AU) with a description, locality, district, one of
+ * eight compass directions and a JPEG image_url per camera. Frames refresh
+ * upstream about once a minute and the image host needs no special headers.
+ * Registered as "QLDTraffic" in src/data/dataCredits.js.
+ *
+ * @returns {Promise<Array<object>>} Normalized camera source objects.
+ */
+async function loadQldSourcesFromOpenData() {
+  try {
+    const apiKey = String(process.env.QLDTRAFFIC_API_KEY || '').trim() || QLD_PUBLIC_API_KEY;
+    const url = `${QLD_WEBCAMS_URL}?apikey=${encodeURIComponent(apiKey)}`;
+    const resp = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
+    });
+    if (!resp.ok) {
+      console.warn('[CCTV] QLDTraffic webcam list download failed:', resp.status);
+      return [];
+    }
+    const collection = await resp.json();
+    const features = Array.isArray(collection?.features) ? collection.features : [];
+
+    const cameras = [];
+    for (const feature of features) {
+      const props = feature?.properties || {};
+      const coordinates = feature?.geometry?.coordinates;
+      const lon = toFiniteNumber(coordinates?.[0]);
+      const lat = toFiniteNumber(coordinates?.[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      const imageUrl = String(props.image_url || '');
+      if (!imageUrl.startsWith(QLD_IMAGE_ORIGIN)) continue; // official-host pin
+
+      const rawId = String(props.id ?? '').trim();
+      if (!rawId) continue;
+      const cameraId = `qld-${rawId}`;
+      const district = String(props.district || '').trim();
+      const districtSlug = district.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+      cameras.push({
+        id: cameraId,
+        name: String(props.description || `QLD camera ${rawId}`),
+        city: String(props.locality || district || 'Queensland'),
+        cityId: districtSlug ? `qld-${districtSlug}` : 'qld',
+        provider: 'QLDTraffic',
+        lat,
+        lon,
+        ...poseFromCompassDirection(cameraId, props.direction),
+        groundElevationM: 15, // Brisbane River basin prior; one-shot snap corrects.
+        feedType: 'image',
+        url: imageUrl,
+        snapshotUrl: imageUrl,
+        sourceKind: 'qld-open-data',
+        license: 'State of Queensland (Department of Transport and Main Roads), QLDTraffic API (CC BY 4.0 AU)',
+      });
+    }
+
+    const maxRaw = Number(process.env.CCTV_QLD_MAX_SOURCES || DEFAULT_QLD_MAX_SOURCES);
+    const maxCount = Number.isFinite(maxRaw) ? Math.max(8, Math.min(600, Math.floor(maxRaw))) : DEFAULT_QLD_MAX_SOURCES;
+    const prioritized = prioritizeSources(cameras, maxCount, QLD_ANCHORS);
+    console.log(`[CCTV] Loaded QLDTraffic sources: ${cameras.length} available (using nearest ${prioritized.length})`);
+    return prioritized;
+  } catch (error) {
+    console.warn('[CCTV] QLDTraffic webcam list download error:', error?.message || error);
+    return [];
+  }
+}
+
+/**
+ * Load the bundled Linkt (Transurban CityLink) Melbourne webcam pack.
+ *
+ * The pack is a snapshot of Linkt's live-webcams catalog (see
+ * LINKT_MELBOURNE_PACK_FILE). Each entry carries a compass `direction`
+ * which becomes the pose prior, and a JPEG url on the Transurban webcam
+ * host. Registered as "Linkt (Transurban CityLink)" in
+ * src/data/dataCredits.js.
+ *
+ * @returns {Array<object>} Normalized camera source objects.
+ */
+function loadLinktMelbourneSources() {
+  const resolved = path.resolve(__dirname, LINKT_MELBOURNE_PACK_FILE);
+  let entries = [];
+  try {
+    entries = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+  } catch (error) {
+    console.warn('[CCTV] failed to read Linkt Melbourne pack:', resolved, error?.message || error);
+    return [];
+  }
+  if (!Array.isArray(entries)) return [];
+
+  const cameras = [];
+  for (const entry of entries) {
+    const cameraId = String(entry?.id || '').trim();
+    const lat = toFiniteNumber(entry?.lat);
+    const lon = toFiniteNumber(entry?.lon);
+    const imageUrl = String(entry?.url || '');
+    if (!cameraId || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    if (!imageUrl.startsWith(LINKT_IMAGE_ORIGIN)) continue; // official-host pin
+
+    cameras.push({
+      ...entry,
+      id: cameraId,
+      lat,
+      lon,
+      ...poseFromCompassDirection(cameraId, entry.direction),
+      groundElevationM: 10, // Yarra basin prior; one-shot snap corrects.
+      feedType: 'image',
+      snapshotUrl: imageUrl,
+      sourceKind: 'linkt-citylink',
+    });
+  }
+  console.log(`[CCTV] Loaded Linkt Melbourne sources: ${cameras.length}`);
+  return cameras;
+}
+
+/**
+ * Keep only string-valued request headers from a source record.
+ *
+ * Some frame hosts (NSW) answer a placeholder unless the fetch carries
+ * browser-like headers. Loaders and file packs may attach them per source;
+ * they stay server-side and are never listed by /api/cctv/sources.
+ *
+ * @param {unknown} value - Raw `upstreamHeaders` field from a source record.
+ * @returns {Record<string,string>|undefined} Clean header map, or undefined when empty.
+ */
+function normalizeUpstreamHeaders(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const headers = {};
+  for (const [name, headerValue] of Object.entries(value)) {
+    if (typeof headerValue === 'string' && name.trim()) headers[name.trim()] = headerValue;
+  }
+  return Object.keys(headers).length ? headers : undefined;
+}
+
 /**
  * Normalize a raw CCTV source item into a canonical shape with safe defaults.
  *
@@ -4199,6 +4490,7 @@ function normalizeSourceItem(item) {
     snapshotUrl: typeof item.snapshotUrl === 'string' ? item.snapshotUrl : '',
     license: String(item.license || item.licenseNote || ''),
     sourceKind: String(item.sourceKind || item.kind || 'configured'),
+    upstreamHeaders: normalizeUpstreamHeaders(item.upstreamHeaders),
     // Optional CAL badge input (cctv-v2 design §3b/§9.2, additive-only per the
     // global constraints — nothing else in this file changes): hand-authored
     // file/env catalog entries may declare poseSource:'curated' so the panel
@@ -4243,27 +4535,40 @@ async function refreshCctvSources() {
 
   const forceAustin = String(process.env.CCTV_FORCE_AUSTIN || '').trim() === '1';
   const preferAustin = String(process.env.CCTV_PREFER_AUSTIN || '1').trim() !== '0';
-  // Live open-data packs (Austin + Caltrans + TfL) load unless a file/env pack
-  // is configured and live packs aren't forced — same gate that governed the
-  // Austin-only fetch, now governing all three. Each pack fails independently.
+  // Live open-data packs (Austin, Caltrans, TfL, NSW, QLD) load unless a
+  // file/env pack is configured and live packs aren't forced: the same gate
+  // that governed the Austin-only fetch now governs all five. Each pack fails
+  // independently.
   const needsLiveSources = forceAustin || ((fromFile.length + fromEnv.length) === 0 && preferAustin);
   const tflEnabled = String(process.env.CCTV_TFL_ENABLED || '1').trim() !== '0';
+  const nswEnabled = String(process.env.CCTV_NSW_ENABLED || '1').trim() !== '0';
+  const qldEnabled = String(process.env.CCTV_QLD_ENABLED || '1').trim() !== '0';
+  const linktEnabled = String(process.env.CCTV_LINKT_ENABLED || '1').trim() !== '0';
 
   let fromAustin = [];
   let fromCaltrans = [];
   let fromTfl = [];
+  let fromNsw = [];
+  let fromQld = [];
+  let fromLinkt = [];
   if (needsLiveSources) {
-    const [austinResult, caltransResult, tflResult] = await Promise.allSettled([
+    const [austinResult, caltransResult, tflResult, nswResult, qldResult] = await Promise.allSettled([
       loadAustinSourcesFromOpenData(),
       loadCaltransSourcesFromOpenData(),
       tflEnabled ? loadTflSourcesFromOpenData() : Promise.resolve([]),
+      nswEnabled ? loadNswSourcesFromOpenData() : Promise.resolve([]),
+      qldEnabled ? loadQldSourcesFromOpenData() : Promise.resolve([]),
     ]);
     fromAustin = austinResult.status === 'fulfilled' ? austinResult.value : [];
     fromCaltrans = caltransResult.status === 'fulfilled' ? caltransResult.value : [];
     fromTfl = tflResult.status === 'fulfilled' ? tflResult.value : [];
+    fromNsw = nswResult.status === 'fulfilled' ? nswResult.value : [];
+    fromQld = qldResult.status === 'fulfilled' ? qldResult.value : [];
+    // Bundled snapshot pack: no network, so it loads synchronously alongside.
+    fromLinkt = linktEnabled ? loadLinktMelbourneSources() : [];
   }
   // Live sources first so file/env overrides win on duplicate IDs (Map last-write).
-  const merged = [...fromAustin, ...fromCaltrans, ...fromTfl, ...fromFile, ...fromEnv];
+  const merged = [...fromAustin, ...fromCaltrans, ...fromTfl, ...fromNsw, ...fromQld, ...fromLinkt, ...fromFile, ...fromEnv];
 
   // Deduplicate by camera ID (last-write wins because of Map.set)
   const byId = new Map();
@@ -4476,11 +4781,14 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl=fetch] - Fetch implementation.
  * @param {number} [options.timeoutMs=CCTV_FRAME_FETCH_TIMEOUT_MS] - Abort timeout.
+ * @param {Record<string,string>} [options.headers] - Extra request headers the
+ *   source record registered for its frame host (see normalizeUpstreamHeaders).
  * @returns {Promise<{ok:true,body:Buffer,contentType:string}|null>}
  */
 export async function fetchCctvImageFromUpstream(url, {
   fetchImpl = fetch,
   timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS,
+  headers = undefined,
 } = {}) {
   if (!url || !/^https?:\/\//i.test(url)) return null;
   const controller = new AbortController();
@@ -4489,7 +4797,7 @@ export async function fetchCctvImageFromUpstream(url, {
   }, timeoutMs);
   try {
     const upstream = await fetchImpl(url, {
-      headers: { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' },
+      headers: { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0', ...(headers || {}) },
       signal: controller.signal,
     });
     const contentType = upstream.headers.get('content-type') || '';
@@ -4666,7 +4974,10 @@ function cctvProxy() {
             }
 
             try {
-              const upstreamHeaders = { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' };
+              const upstreamHeaders = {
+                'User-Agent': 'gods-eye-view-cctv-proxy/1.0',
+                ...(source?.upstreamHeaders || {}),
+              };
               const requestRange = req.headers?.range;
               if (requestRange) upstreamHeaders.Range = requestRange;
               const upstream = await fetch(mediaUrl, {
@@ -4740,7 +5051,9 @@ function cctvProxy() {
             source?.snapshotUrl
             || (!isVideoFeedType(normalizeFeedType(source?.feedType)) ? source?.url : '');
 
-          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate);
+          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate, {
+            headers: source?.upstreamHeaders,
+          });
           if (upstreamImage?.ok) {
             setHealth(cameraId, {
               status: 'ok',
@@ -7743,6 +8056,8 @@ export default defineConfig(({ mode }) => {
   const localAllowedHosts = ['localhost', '127.0.0.1', '.local'];
   return {
     plugins: [
+      // First so the password check runs before every proxy and asset route.
+      accessGatePlugin(env.GEV_ACCESS_PASSWORD),
       cesium(),
       openSkyProxy(),
       celestrakProxy(),

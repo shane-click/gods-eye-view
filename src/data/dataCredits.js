@@ -128,6 +128,26 @@ export const DATA_CREDITS = [
       'Contains OS data © Crown copyright and database rights.',
   },
   {
+    key: 'nsw-cctv',
+    html:
+      'CCTV cameras &amp; frames (New South Wales): ' +
+      '<a href="https://opendata.transport.nsw.gov.au/dataset/live-traffic-cameras" target="_blank" rel="noopener">Transport for NSW Live Traffic</a> ' +
+      '(CC BY 3.0 AU)',
+  },
+  {
+    key: 'qld-cctv',
+    html:
+      'CCTV cameras &amp; frames (Queensland): ' +
+      '<a href="https://qldtraffic.qld.gov.au/more/Developers-and-Data/index.html" target="_blank" rel="noopener">State of Queensland (Department of Transport and Main Roads), QLDTraffic API</a> ' +
+      '(CC BY 4.0 AU)',
+  },
+  {
+    key: 'linkt-cctv',
+    html:
+      'CCTV cameras &amp; frames (Melbourne CityLink): ' +
+      '<a href="https://www.linkt.com.au/using-toll-roads/traffic-and-roadworks/melbourne" target="_blank" rel="noopener">Linkt (Transurban)</a> public webcams',
+  },
+  {
     key: 'gbfs',
     html: 'Bikeshare availability: GBFS operator feeds (e.g. Austin BCycle)',
   },
