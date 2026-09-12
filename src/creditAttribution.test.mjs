@@ -274,6 +274,11 @@ function resolve(candidates, prop, width, label) {
   let winner = null;
   for (const rule of RULES) {
     if (!rule.parts.some((part) => candidates.includes(part))) continue;
+    // A rule that never sets `prop` cannot win this resolution, so its media
+    // conditions don't need to be modelled (e.g. the touch-device opacity
+    // override on the credit, gated by a non-width condition, is geometrically
+    // irrelevant here).
+    if (!rule.decls.some((decl) => decl.prop === prop)) continue;
     if (!appliesAt(rule, width, label)) continue;
     for (const part of rule.parts) {
       if (!candidates.includes(part)) continue;
@@ -588,7 +593,14 @@ test('the credit line is never suppressed to make room', () => {
   for (const block of creditBlocks) {
     assert.doesNotMatch(block, /display\s*:\s*none/, 'the credit must never be display:none');
     assert.doesNotMatch(block, /visibility\s*:\s*hidden/, 'the credit must never be hidden');
-    assert.doesNotMatch(block, /opacity\s*:\s*0(\D|$)/, 'the credit must never be faded out');
   }
+  // The credit may only be FADED as part of the hover-to-reveal pattern: the
+  // base rule fades it out, and hover / keyboard focus / touch devices must
+  // each restore full opacity. Any other fade-out is a suppression.
+  const faded = creditBlocks.filter((block) => /opacity\s*:\s*0(\D|$)/.test(block));
+  assert.equal(faded.length, 1, 'only the base rule may fade the credit out');
+  assert.match(css, /#cesium-credits:hover[^{]*\{[^}]*opacity:\s*1(\D|$)/, 'hover must reveal the credit');
+  assert.match(css, /#cesium-credits:focus-within[^{]*\{[^}]*opacity:\s*1(\D|$)/, 'keyboard focus must reveal the credit');
+  assert.match(css, /@media \(hover: none\), \(pointer: coarse\)[^{]*\{[^}]*#cesium-credits[^{]*\{[^}]*opacity:\s*1(\D|$)/, 'touch devices must always show the credit');
   assert.match(css, /body\.ui-clean-view #cesium-credits,\s*\n\s*body\.recording-mode #cesium-credits \{[^}]*bottom: 36px;/);
 });

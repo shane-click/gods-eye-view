@@ -256,14 +256,15 @@ body.cockpit-mode #cockpit-cloud-effects.active {
 }
 
 /* Data-source attribution (Google Maps / 3D Tiles, etc.).
-   Required by the Google Maps Platform Terms of Service — keep it visible.
+   Required by the Google Maps Platform Terms of Service — kept reachable via
+   hover-to-reveal below (hidden by default, shown on hover/focus/touch).
    Styled to be unobtrusive but legible against the dark UI. */
 #cesium-credits {
   position: fixed;
   /* Bottom-LEFT corner, mirrored from the GEV mic pill (right:36/bottom:36) so the two bottom
      corners are symmetric; sits below the coordinate HUD (.hud-bottom-left, bottom:180). Was
-     dead-center at the bottom, tucked under the LOCATIONS/STYLE panels. Must stay visible (Google
-     /Cesium attribution ToS). */
+     dead-center at the bottom, tucked under the LOCATIONS/STYLE panels. Must stay reachable
+     (Google /Cesium attribution ToS). */
   bottom: 36px;
   left: 36px;
   z-index: 90;
@@ -276,6 +277,33 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   font-size: 10px;
   color: rgba(232, 234, 237, 0.55);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  /* Hover-to-reveal: faded out by default so the bottom-left corner stays
+     clean, fully visible on hover or keyboard focus (the "Data attribution"
+     link is focusable — see creditKeyboard.js). The credit stays in the
+     layout and is one hover away, keeping the required Google/Cesium
+     attribution reachable. */
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+}
+
+#cesium-credits:hover,
+#cesium-credits:focus-within {
+  opacity: 1;
+}
+
+/* Invisible credit still needs a usable hover target — pad the hit area a
+   little beyond the one-line credit itself. */
+#cesium-credits::before {
+  content: '';
+  position: absolute;
+  inset: -10px;
+}
+
+/* Touch devices can't hover — keep the attribution visible there. */
+@media (hover: none), (pointer: coarse) {
+  #cesium-credits {
+    opacity: 1;
+  }
 }
 #cesium-credits .cesium-credit-logoContainer,
 #cesium-credits .cesium-credit-textContainer,

@@ -96,13 +96,11 @@ async function init() {
       selectionIndicator: false,
       infoBox: false,
       baseLayer: false,
-      // Visible attribution container — Google Maps / 3D Tiles credits are
-      // required by Google's Terms of Service, so they must be shown (styled
-      // subtly via #cesium-credits). The credit line stays visible in
-      // clean-view AND recording modes too (ToS requires attribution while the
-      // content is displayed — those are the exact modes used to record
-      // demos), including the "Data attribution" link that opens the per-layer
-      // license popover.
+      // Attribution container — Google Maps / 3D Tiles credits are required by
+      // Google's Terms of Service, so they stay reachable (styled subtly via
+      // #cesium-credits; faded out until hover/focus/touch). The credit line
+      // stays reachable in clean-view AND recording modes too, including the
+      // "Data attribution" link that opens the per-layer license popover.
       creditContainer: (() => {
         const el = document.createElement('div');
         el.id = 'cesium-credits';
