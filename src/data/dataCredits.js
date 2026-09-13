@@ -128,6 +128,13 @@ export const DATA_CREDITS = [
       'Contains OS data © Crown copyright and database rights.',
   },
   {
+    key: 'gcba-cctv',
+    html:
+      'CCTV cameras &amp; frames (Buenos Aires): ' +
+      '<a href="https://apitransporte.buenosaires.gob.ar" target="_blank" rel="noopener">GCBA API Transporte</a> — ' +
+      'Cámaras de Tránsito (free registration required for live frames)',
+  },
+  {
     key: 'gbfs',
     html: 'Bikeshare availability: GBFS operator feeds (e.g. Austin BCycle)',
   },

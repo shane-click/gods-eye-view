@@ -3547,6 +3547,13 @@ const TFL_JAMCAM_URL = 'https://api.tfl.gov.uk/Place/Type/JamCam';
 const TFL_IMAGE_ORIGIN = 'https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/';
 const DEFAULT_TFL_MAX_SOURCES = 250;
 const LONDON_CENTER = { lat: 51.5074, lon: -0.1278 };
+/** GCBA API Transporte (Buenos Aires): requires free-registration
+ * client_id/client_secret credentials (see .env.example). */
+const GCBA_CAMARAS_URL = 'https://apitransporte.buenosaires.gob.ar/transito/v1/camaras';
+const DEFAULT_ARGENTINA_MAX_SOURCES = 600;
+const BUENOS_AIRES_CENTER = { lat: -34.6037, lon: -58.3816 };
+/** Browser-like UA for upstreams (GCBA) that reject non-browser clients. */
+const BROWSER_LIKE_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 /** Camera CATALOGS change rarely; 15 min keeps multi-megabyte upstream list refetches (Austin rows.json + 4 Caltrans districts + TfL) infrequent. Frames are fetched per-request and are unaffected. */
 const CCTV_SOURCE_CACHE_MS = 15 * 60 * 1000;
 /** Per-provider catalog-fetch timeout. Bounds the worst-case refresh so one
@@ -4173,6 +4180,132 @@ async function loadTflSourcesFromOpenData() {
 }
 
 /**
+ * Rough Greater Buenos Aires bounding box (covers CABA + GBA corridors,
+ * Aeroparque and Ezeiza) — drops malformed/misplaced upstream rows.
+ */
+function isLikelyBuenosAiresCoordinate(lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+  return lat >= -35.40 && lat <= -34.20 && lon >= -59.20 && lon <= -57.60;
+}
+
+/**
+ * Fetch Buenos Aires traffic cameras from the GCBA API Transporte.
+ *
+ * Credential-gated (returns [] otherwise): CCTV_ARGENTINA_CLIENT_ID +
+ * CCTV_ARGENTINA_CLIENT_SECRET from a free registration. Alternatively
+ * CCTV_ARGENTINA=1 with CCTV_ARGENTINA_ROWS_URL points the loader at a
+ * self-contained mirror URL (same tolerant mapping; credentials baked into
+ * the mirror URL or keyless), mirroring how Austin has CCTV_AUSTIN_ROWS_URL.
+ *
+ * The exact response schema is not publicly documented, so field mapping is
+ * tolerant: the camera array is accepted directly or under `camaras`/`data`/
+ * `results`, and each camera accepts common Spanish/English field aliases.
+ * When a row carries no per-camera image field, the snapshot URL is
+ * synthesized as the credential-bearing per-camera API endpoint, so frame
+ * fetches stay server-side and credentials never reach the browser.
+ *
+ * @returns {Promise<Array<object>>} Normalized camera source objects.
+ */
+async function loadArgentinaSourcesFromOpenData() {
+  const clientId = String(process.env.CCTV_ARGENTINA_CLIENT_ID || '').trim();
+  const clientSecret = String(process.env.CCTV_ARGENTINA_CLIENT_SECRET || '').trim();
+  const rowsUrl = String(process.env.CCTV_ARGENTINA_ROWS_URL || '').trim();
+  const mirrorEnabled = String(process.env.CCTV_ARGENTINA || '').trim() === '1' && !!rowsUrl;
+  const credentialed = !!clientId && !!clientSecret;
+  if (!credentialed && !mirrorEnabled) return [];
+  if (!credentialed && !rowsUrl) return []; // mirror mode needs an explicit URL
+
+  try {
+    const endpoint = rowsUrl
+      || `${GCBA_CAMARAS_URL}?client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`;
+    const resp = await fetch(endpoint, {
+      headers: { Accept: 'application/json', 'User-Agent': BROWSER_LIKE_USER_AGENT },
+      signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
+    });
+    if (!resp.ok) {
+      console.warn('[CCTV] Argentina (GCBA) camera download failed:', resp.status);
+      return [];
+    }
+    const payload = await resp.json();
+    const rows = Array.isArray(payload) ? payload
+      : Array.isArray(payload?.camaras) ? payload.camaras
+      : Array.isArray(payload?.data) ? payload.data
+      : Array.isArray(payload?.results) ? payload.results
+      : [];
+    if (!rows.length) return [];
+
+    const pickField = (obj, keys) => {
+      for (const key of keys) {
+        const value = obj?.[key];
+        if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+      }
+      return undefined;
+    };
+
+    const cameras = [];
+    for (const row of rows) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+      const rawId = pickField(row, ['id', 'id_camara', 'camera_id', 'camara_id']);
+      if (rawId === undefined) continue;
+      const stableId = String(rawId).trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, '-');
+      if (!stableId) continue;
+      const cameraId = `ar-gcba-${stableId}`;
+
+      const lat = toFiniteNumber(pickField(row, ['lat', 'latitude']));
+      const lon = toFiniteNumber(pickField(row, ['lon', 'lng', 'long', 'longitude']));
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      if (!isLikelyBuenosAiresCoordinate(lat, lon)) continue;
+
+      const name = String(pickField(row, ['name', 'nombre', 'direccion', 'address']) ?? `Cámara GCBA ${stableId}`).trim();
+
+      let imageUrl = String(pickField(row, ['snapshotUrl', 'snapshot', 'imagen', 'image', 'url']) || '').trim();
+      if (!/^https?:\/\//i.test(imageUrl)) {
+        // No usable per-camera image field: keep frames server-side through the
+        // credential-bearing per-camera endpoint (never exposed to the browser —
+        // /api/cctv/sources omits url/snapshotUrl from its payload).
+        imageUrl = credentialed
+          ? `${GCBA_CAMARAS_URL}/${encodeURIComponent(stableId)}?client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`
+          : '';
+      }
+
+      cameras.push({
+        id: cameraId,
+        name: name || `Cámara GCBA ${stableId}`,
+        city: 'Buenos Aires',
+        cityId: 'buenos-aires',
+        provider: 'GCBA Cámaras de Tránsito',
+        lat,
+        lon,
+        // No heading signal in the GCBA schema → id-hash fallback, low
+        // confidence personality (same as headingless TfL cameras).
+        headingDeg: fallbackHeadingFromId(cameraId),
+        headingConfidence: 'low',
+        pitchDeg: -18,
+        fovDeg: 44,
+        rangeM: 145,
+        mountHeightM: 8,
+        groundElevationM: 25, // Pampa prior; one-shot snap corrects.
+        feedType: 'image',
+        url: imageUrl,
+        snapshotUrl: imageUrl,
+        sourceKind: 'argentina-gcba-open-data',
+        license: 'GCBA API Transporte — requiere registro gratuito (client_id/client_secret)',
+      });
+    }
+
+    const unique = Array.from(new Map(cameras.map((camera) => [camera.id, camera])).values());
+    const maxRaw = Number(process.env.CCTV_ARGENTINA_MAX_SOURCES || DEFAULT_ARGENTINA_MAX_SOURCES);
+    const maxCount = Number.isFinite(maxRaw) ? Math.max(8, Math.min(600, Math.floor(maxRaw))) : DEFAULT_ARGENTINA_MAX_SOURCES;
+    const prioritized = prioritizeSources(unique, maxCount, [BUENOS_AIRES_CENTER]);
+    console.log(`[CCTV] Loaded Argentina (GCBA) camera sources: ${unique.length} (using nearest ${prioritized.length})`);
+    return prioritized;
+  } catch (error) {
+    console.warn('[CCTV] Argentina (GCBA) camera download error:', error?.message || error);
+    return [];
+  }
+}
+
+/**
  * Normalize a raw CCTV source item into a canonical shape with safe defaults.
  *
  * @param {object} item - Raw source from file, env, or Austin Open Data.
@@ -4205,6 +4338,17 @@ function normalizeSourceItem(item) {
     // badge can distinguish them from raw automated priors (e.g. Austin Open
     // Data, which never sets this field). Passed through as-is to the client.
     poseSource: item.poseSource === 'curated' ? 'curated' : undefined,
+    // Optional upstream-request spoofing knobs (anti-hotlink / CORS escape):
+    // `referer` overrides the Referer sent to this source's upstream; `headers`
+    // merges arbitrary extra request headers. Server-side only — the /sources
+    // payload never exposes them to the browser.
+    referer: typeof item.referer === 'string' ? item.referer : '',
+    headers: (item.headers && typeof item.headers === 'object' && !Array.isArray(item.headers))
+      ? Object.fromEntries(
+          Object.entries(item.headers)
+            .filter(([key, value]) => typeof key === 'string' && key.trim() !== '' && typeof value === 'string')
+        )
+      : undefined,
   };
 }
 
@@ -4243,27 +4387,33 @@ async function refreshCctvSources() {
 
   const forceAustin = String(process.env.CCTV_FORCE_AUSTIN || '').trim() === '1';
   const preferAustin = String(process.env.CCTV_PREFER_AUSTIN || '1').trim() !== '0';
-  // Live open-data packs (Austin + Caltrans + TfL) load unless a file/env pack
-  // is configured and live packs aren't forced — same gate that governed the
-  // Austin-only fetch, now governing all three. Each pack fails independently.
+  // Live open-data packs (Austin + Caltrans + TfL + Argentina/GCBA) load unless a
+  // file/env pack is configured and live packs aren't forced — same gate that
+  // governed the Austin-only fetch, now governing all four. Each pack fails
+  // independently; the Argentina pack additionally self-gates on credentials
+  // (CCTV_ARGENTINA_CLIENT_ID/SECRET) or a CCTV_ARGENTINA_ROWS_URL mirror.
   const needsLiveSources = forceAustin || ((fromFile.length + fromEnv.length) === 0 && preferAustin);
   const tflEnabled = String(process.env.CCTV_TFL_ENABLED || '1').trim() !== '0';
+  const argentinaEnabled = String(process.env.CCTV_ARGENTINA || '1').trim() !== '0';
 
   let fromAustin = [];
   let fromCaltrans = [];
   let fromTfl = [];
+  let fromArgentina = [];
   if (needsLiveSources) {
-    const [austinResult, caltransResult, tflResult] = await Promise.allSettled([
+    const [austinResult, caltransResult, tflResult, argentinaResult] = await Promise.allSettled([
       loadAustinSourcesFromOpenData(),
       loadCaltransSourcesFromOpenData(),
       tflEnabled ? loadTflSourcesFromOpenData() : Promise.resolve([]),
+      argentinaEnabled ? loadArgentinaSourcesFromOpenData() : Promise.resolve([]),
     ]);
     fromAustin = austinResult.status === 'fulfilled' ? austinResult.value : [];
     fromCaltrans = caltransResult.status === 'fulfilled' ? caltransResult.value : [];
     fromTfl = tflResult.status === 'fulfilled' ? tflResult.value : [];
+    fromArgentina = argentinaResult.status === 'fulfilled' ? argentinaResult.value : [];
   }
   // Live sources first so file/env overrides win on duplicate IDs (Map last-write).
-  const merged = [...fromAustin, ...fromCaltrans, ...fromTfl, ...fromFile, ...fromEnv];
+  const merged = [...fromAustin, ...fromCaltrans, ...fromTfl, ...fromArgentina, ...fromFile, ...fromEnv];
 
   // Deduplicate by camera ID (last-write wins because of Map.set)
   const byId = new Map();
@@ -4466,6 +4616,47 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
 }
 
 /**
+ * Build upstream request headers for a CCTV fetch, layering spoofing knobs:
+ * per-source `headers`/`referer` (from the file/env/live-pack catalog) win over
+ * the CCTV_UPSTREAM_REFERER / CCTV_UPSTREAM_UA env fallbacks, which win over
+ * the built-in proxy UA. Used to defeat upstream hotlink protection — the
+ * browser only ever talks to same-origin /api/cctv/*, so these headers are the
+ * only "CORS spoof" needed on the upstream leg.
+ *
+ * @param {object|null} source - Normalized source (may carry referer/headers).
+ * @returns {Record<string,string>} Header map for the upstream fetch.
+ */
+function buildCctvUpstreamHeaders(source) {
+  const headers = {};
+  headers['User-Agent'] = String(process.env.CCTV_UPSTREAM_UA || '').trim() || 'gods-eye-view-cctv-proxy/1.0';
+  const referer = (typeof source?.referer === 'string' && source.referer.trim())
+    || String(process.env.CCTV_UPSTREAM_REFERER || '').trim();
+  if (referer) headers['Referer'] = referer;
+  if (source?.headers && typeof source.headers === 'object' && !Array.isArray(source.headers)) {
+    for (const [key, value] of Object.entries(source.headers)) {
+      if (typeof key === 'string' && key.trim() !== '' && typeof value === 'string') {
+        headers[key] = value;
+      }
+    }
+  }
+  return headers;
+}
+
+/**
+ * Rewrite an upstream URL through the optional CCTV_UPSTREAM_PROXY_PREFIX
+ * escape hatch (e.g. a public CORS proxy like `https://corsproxy.io/?url=`)
+ * for hosts that block datacenter IPs. No-op when unset.
+ *
+ * @param {string} url - Original upstream URL.
+ * @returns {string} Possibly prefixed URL.
+ */
+function applyCctvUpstreamProxyPrefix(url) {
+  const prefix = String(process.env.CCTV_UPSTREAM_PROXY_PREFIX || '').trim();
+  if (!prefix || !url) return url;
+  return `${prefix}${encodeURIComponent(url)}`;
+}
+
+/**
  * Fetch one upstream CCTV image within the frame-refresh budget.
  *
  * A timeout is treated like every other upstream miss so the caller can
@@ -4476,11 +4667,13 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl=fetch] - Fetch implementation.
  * @param {number} [options.timeoutMs=CCTV_FRAME_FETCH_TIMEOUT_MS] - Abort timeout.
+ * @param {object} [options.source] - Normalized source for upstream header spoofing.
  * @returns {Promise<{ok:true,body:Buffer,contentType:string}|null>}
  */
 export async function fetchCctvImageFromUpstream(url, {
   fetchImpl = fetch,
   timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS,
+  source = null,
 } = {}) {
   if (!url || !/^https?:\/\//i.test(url)) return null;
   const controller = new AbortController();
@@ -4488,8 +4681,8 @@ export async function fetchCctvImageFromUpstream(url, {
     controller.abort(new DOMException('CCTV upstream frame fetch timed out', 'TimeoutError'));
   }, timeoutMs);
   try {
-    const upstream = await fetchImpl(url, {
-      headers: { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' },
+    const upstream = await fetchImpl(applyCctvUpstreamProxyPrefix(url), {
+      headers: buildCctvUpstreamHeaders(source),
       signal: controller.signal,
     });
     const contentType = upstream.headers.get('content-type') || '';
@@ -4600,6 +4793,18 @@ function cctvProxy() {
     configureServer(server) {
       server.middlewares.use('/api/cctv', async (req, res) => {
         try {
+          // Cross-origin consumption: the browser client is same-origin, but the
+          // catalog/frames are also usable directly from other origins. Range is
+          // allow-listed for cross-origin <video> byte-range playback.
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Range');
+          res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length');
+          if (req.method === 'OPTIONS') {
+            res.writeHead(204);
+            res.end();
+            return;
+          }
           const sources = await getCctvSources();
           const sourceById = new Map(sources.map((source) => [source.id, source]));
           const url = new URL(req.url || '/', 'http://localhost');
@@ -4666,10 +4871,13 @@ function cctvProxy() {
             }
 
             try {
-              const upstreamHeaders = { 'User-Agent': 'gods-eye-view-cctv-proxy/1.0' };
+              // Per-source spoofing headers + env fallbacks (anti-hotlink); Range
+              // is forwarded AFTER merging so a source `headers` block can't
+              // clobber byte-range playback.
+              const upstreamHeaders = buildCctvUpstreamHeaders(source);
               const requestRange = req.headers?.range;
               if (requestRange) upstreamHeaders.Range = requestRange;
-              const upstream = await fetch(mediaUrl, {
+              const upstream = await fetch(applyCctvUpstreamProxyPrefix(mediaUrl), {
                 headers: upstreamHeaders,
               });
               const contentType = upstream.headers.get('content-type') || '';
@@ -4740,7 +4948,7 @@ function cctvProxy() {
             source?.snapshotUrl
             || (!isVideoFeedType(normalizeFeedType(source?.feedType)) ? source?.url : '');
 
-          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate);
+          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate, { source });
           if (upstreamImage?.ok) {
             setHealth(cameraId, {
               status: 'ok',
